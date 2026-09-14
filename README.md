@@ -212,6 +212,18 @@ repo**.
 
 Apache-2.0.
 
+## Maintainers
+
+<table align="center">
+<tr>
+<td align="center">
+<strong>Aycode01</strong> — maintainer
+<br />
+<a href="https://github.com/Aycode01">github.com/Aycode01</a>
+</td>
+</tr>
+</table>
+
 ## Socials
 
 - [Discord](https://discord.gg/pMwVZf8TX)
