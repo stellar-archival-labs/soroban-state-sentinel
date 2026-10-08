@@ -4,7 +4,7 @@
 
 # soroban-state-sentinel
 
-[![CI](https://github.com/Aycode01/soroban-state-sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/Aycode01/soroban-state-sentinel/actions/workflows/ci.yml)
+[![CI](https://github.com/stellar-archival-labs/soroban-state-sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/stellar-archival-labs/soroban-state-sentinel/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 <p align="center">
