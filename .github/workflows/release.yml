@@ -1,18 +1,26 @@
 name: release
 
-# Tag-triggered binary releases. `workflow_dispatch` is included so a release
-# can be (re)built for an existing tag without re-pushing it.
+# Tag-triggered binary releases. `workflow_dispatch` (with an explicit `tag`
+# input) rebuilds a release for an *existing* tag without re-pushing it — the
+# workflow is read from the default branch, so the tag itself is never moved.
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build a release for (e.g. v0.1.0)'
+        required: true
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
+  # For a tag push this resolves to the tag; for a manual dispatch it is the
+  # `tag` input.
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -33,6 +41,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -47,7 +57,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          tag="${RELEASE_TAG}"
           target="${{ matrix.target }}"
           stage="soroban-state-sentinel-${tag}-${target}"
           mkdir -p "dist/${stage}"
@@ -73,6 +83,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      # Check out the default branch purely to read `.github/RELEASE_NOTES.md`.
       - uses: actions/checkout@v4
 
       - name: Download packaged assets
@@ -87,7 +98,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
+          tag="${RELEASE_TAG}"
           if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$tag" \
               --repo "$GITHUB_REPOSITORY" \
@@ -95,5 +106,6 @@ jobs:
               --notes-file .github/RELEASE_NOTES.md
           fi
           gh release upload "$tag" --repo "$GITHUB_REPOSITORY" dist/* --clobber
+          echo "assets now on ${tag}:"
           gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
             --jq '.assets[].name'
