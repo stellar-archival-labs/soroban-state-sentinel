@@ -75,7 +75,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.target }}
-          path: dist/*
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
           if-no-files-found: error
 
   release:
@@ -105,7 +107,7 @@ jobs:
               --title "soroban-state-sentinel ${tag}" \
               --notes-file .github/RELEASE_NOTES.md
           fi
-          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" dist/* --clobber
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" dist/*.tar.gz dist/*.sha256 --clobber
           echo "assets now on ${tag}:"
           gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
             --jq '.assets[].name'
