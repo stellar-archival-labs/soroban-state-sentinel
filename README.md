@@ -63,6 +63,41 @@ bounds, resource limits, and ledger close time are read from the live network
 (RPC config-setting entries, `getLatestLedger`) or supplied explicitly on the
 command line, and every assumption is labeled in the output.
 
+## Install
+
+Prebuilt binaries are published on the
+[releases page](https://github.com/stellar-archival-labs/soroban-state-sentinel/releases)
+(`v0.1.0`):
+
+| Target | Platform |
+| --- | --- |
+| `x86_64-unknown-linux-gnu` | Linux x86_64 |
+| `aarch64-apple-darwin` | macOS Apple Silicon |
+| `x86_64-apple-darwin` | macOS Intel |
+
+Download, verify the checksum, and run (Linux/macOS):
+
+```bash
+VERSION=v0.1.0
+TARGET=x86_64-unknown-linux-gnu        # or aarch64-apple-darwin / x86_64-apple-darwin
+BASE="https://github.com/stellar-archival-labs/soroban-state-sentinel/releases/download/${VERSION}"
+ASSET="soroban-state-sentinel-${VERSION}-${TARGET}.tar.gz"
+
+curl -fsSLO "${BASE}/${ASSET}"
+curl -fsSLO "${BASE}/${ASSET}.sha256"
+sha256sum --check "${ASSET}.sha256"    # macOS: shasum -a 256 -c "${ASSET}.sha256"
+tar -xzf "${ASSET}"
+./soroban-state-sentinel-${VERSION}-${TARGET}/soroban-state-sentinel --help
+```
+
+Or install from the tagged source with Cargo — this installs a binary named
+`soroban-state-sentinel` (it is set explicitly in the `[[bin]]` section of
+[`crates/cli/Cargo.toml`](crates/cli/Cargo.toml)):
+
+```bash
+cargo install --git https://github.com/stellar-archival-labs/soroban-state-sentinel --tag v0.1.0 sentinel-cli --locked
+```
+
 ## Build
 
 ```bash
