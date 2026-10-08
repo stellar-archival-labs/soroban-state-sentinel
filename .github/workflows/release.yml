@@ -1,0 +1,99 @@
+name: release
+
+# Tag-triggered binary releases. `workflow_dispatch` is included so a release
+# can be (re)built for an existing tag without re-pushing it.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Runner labels verified against actions/runner-images (2026-10):
+          # `ubuntu-latest` = Ubuntu 24.04 x64, `macos-15` = macOS 15 arm64,
+          # `macos-15-intel` = macOS 15 x86_64.
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build (locked)
+        run: cargo build --release -p sentinel-cli --locked
+
+      - name: Package tarball + sha256
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          target="${{ matrix.target }}"
+          stage="soroban-state-sentinel-${tag}-${target}"
+          mkdir -p "dist/${stage}"
+          cp target/release/soroban-state-sentinel "dist/${stage}/"
+          cp LICENSE README.md "dist/${stage}/"
+          tar -C dist -czf "dist/${stage}.tar.gz" "${stage}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            ( cd dist && sha256sum "${stage}.tar.gz" > "${stage}.tar.gz.sha256" )
+          else
+            ( cd dist && shasum -a 256 "${stage}.tar.gz" > "${stage}.tar.gz.sha256" )
+          fi
+          ls -l dist
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download packaged assets
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release and upload assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "soroban-state-sentinel ${tag}" \
+              --notes-file .github/RELEASE_NOTES.md
+          fi
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" dist/* --clobber
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name'
