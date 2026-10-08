@@ -11,3 +11,9 @@ sentinel-rpc-client = { path = "../rpc-client" }
 sentinel-xdr-builder = { path = "../xdr-builder" }
 stellar-xdr.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+# The round-2 regression test spins a tiny in-process RPC server to observe how
+# many `getLedgerEntries` requests the scan issues and which keys each carries.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }
+serde_json.workspace = true

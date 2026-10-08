@@ -444,3 +444,236 @@ fn ttl_live_until(
         .and_then(|i| i.live_until_ledger_seq)
         .filter(|seq| *seq > 0)
 }
+
+#[cfg(test)]
+mod round_two_tests {
+    //! Regression coverage for the separate round-2 code-entry fetch.
+    //!
+    //! The contract-code ledger key is only discoverable *after* the contract
+    //! instance has been fetched (its wasm hash lives in the instance entry), so
+    //! the code entry MUST be fetched in its own `getLedgerEntries` round.
+    //! Looking it up in the round-1 response reports it as archived. This test
+    //! observes the actual request rounds and fails if the code key is not
+    //! carried in a separate request from the instance key.
+
+    use super::*;
+    use crate::health::HealthBand;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use stellar_xdr::{
+        ContractCodeEntry, ContractCodeEntryExt, ContractDataEntry, ContractExecutable, ContractId,
+        ExtensionPoint, Hash, LedgerKeyContractCode, Limits, ScAddress, ScContractInstance,
+        WriteXdr,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// base64 keys of each `getLedgerEntries` request, in request order.
+    type Rounds = Arc<Mutex<Vec<Vec<String>>>>;
+
+    fn http_ok(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+    }
+
+    fn jsonrpc_error(msg: String) -> String {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": null,
+            "error": { "code": -32603, "message": msg }
+        })
+        .to_string();
+        http_ok(&body)
+    }
+
+    fn handle(
+        rounds: &Rounds,
+        entries: &HashMap<String, (String, u32)>,
+        latest: u32,
+        body: &str,
+    ) -> String {
+        let req: serde_json::Value = match serde_json::from_str(body) {
+            Ok(v) => v,
+            Err(e) => return jsonrpc_error(format!("bad request: {e}")),
+        };
+        let id = req["id"].clone();
+        let method = req["method"].as_str().unwrap_or("");
+
+        let result = match method {
+            "getLatestLedger" => serde_json::json!({
+                "id": "mock",
+                "protocolVersion": 28,
+                "sequence": latest,
+                "closeTime": "1000000"
+            }),
+            "getNetwork" => serde_json::json!({
+                "passphrase": "Test SDF Network ; September 2015",
+                "protocolVersion": 28
+            }),
+            "getLedgerEntries" => {
+                let keys: Vec<String> = req["params"]["keys"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|k| k.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                rounds.lock().unwrap().push(keys.clone());
+
+                let mut out = Vec::new();
+                for k in &keys {
+                    if let Some((xdr, live_until)) = entries.get(k) {
+                        out.push(serde_json::json!({
+                            "key": k,
+                            "xdr": xdr,
+                            "lastModifiedLedgerSeq": 900,
+                            "liveUntilLedgerSeq": live_until
+                        }));
+                    }
+                }
+                serde_json::json!({ "latestLedger": latest, "entries": out })
+            }
+            other => return jsonrpc_error(format!("unexpected method: {other}")),
+        };
+
+        let envelope =
+            serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string();
+        http_ok(&envelope)
+    }
+
+    async fn start_mock(entries: HashMap<String, (String, u32)>, latest: u32) -> (String, Rounds) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let rounds: Rounds = Arc::new(Mutex::new(Vec::new()));
+        let rounds_out = rounds.clone();
+        let entries = Arc::new(entries);
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    continue;
+                };
+                let rounds = rounds.clone();
+                let entries = entries.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 128 * 1024];
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let body = request
+                        .split("\r\n\r\n")
+                        .nth(1)
+                        .unwrap_or("")
+                        .trim_end()
+                        .to_string();
+                    let response = handle(&rounds, &entries, latest, &body);
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+
+        (format!("http://{addr}"), rounds_out)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn code_entry_is_fetched_in_a_separate_round() {
+        let contract = Hash([0x11u8; 32]);
+        let wasm_hash = [0xCDu8; 32];
+        let latest = 1_000u32;
+        let live_until = latest + 600_000;
+
+        let instance_scval = ScVal::ContractInstance(ScContractInstance {
+            executable: ContractExecutable::Wasm(Hash(wasm_hash)),
+            storage: None,
+        });
+        let inst_key = instance_key(contract.clone());
+        let instance_entry = LedgerEntryData::ContractData(ContractDataEntry {
+            ext: ExtensionPoint::V0,
+            contract: ScAddress::Contract(ContractId(contract.clone())),
+            key: ScVal::LedgerKeyContractInstance,
+            durability: ContractDataDurability::Persistent,
+            val: instance_scval,
+        });
+
+        let code_key = LedgerKey::ContractCode(LedgerKeyContractCode {
+            hash: Hash(wasm_hash),
+        });
+        let code_entry = LedgerEntryData::ContractCode(ContractCodeEntry {
+            ext: ContractCodeEntryExt::V0,
+            hash: Hash(wasm_hash),
+            code: stellar_xdr::BytesM::try_from(vec![0u8; 8]).expect("bytes"),
+        });
+
+        let inst_key_b64 = inst_key.to_xdr_base64(Limits::none()).expect("encode");
+        let code_key_b64 = code_key.to_xdr_base64(Limits::none()).expect("encode");
+
+        let mut entries = HashMap::new();
+        entries.insert(
+            inst_key_b64.clone(),
+            (
+                instance_entry
+                    .to_xdr_base64(Limits::none())
+                    .expect("encode"),
+                live_until,
+            ),
+        );
+        entries.insert(
+            code_key_b64.clone(),
+            (
+                code_entry.to_xdr_base64(Limits::none()).expect("encode"),
+                live_until,
+            ),
+        );
+
+        let (url, rounds) = start_mock(entries, latest).await;
+        let rpc = sentinel_rpc_client::RpcClient::new(&url).expect("client");
+
+        let opts = ScanOptions {
+            contract_id: contract,
+            explicit_keys: vec![],
+            explicit_durability: ContractDataDurability::Persistent,
+            healthy_min_days: 30,
+            critical_max_days: 7,
+            ledger_close_seconds: 5,
+        };
+        let result = opts.scan(&rpc).await.expect("scan succeeds");
+
+        // The code row must exist and must not be misclassified as archived.
+        let code_row = result
+            .entries
+            .iter()
+            .find(|e| e.id == "code")
+            .expect("a code row is produced when the instance is a wasm contract");
+        assert_ne!(
+            code_row.band,
+            HealthBand::Archived,
+            "code entry was reported archived — it was not fetched in its own round"
+        );
+
+        let rounds = rounds.lock().unwrap();
+        let instance_round = rounds
+            .iter()
+            .position(|r| r.contains(&inst_key_b64))
+            .expect("instance key was fetched");
+        let code_round = rounds
+            .iter()
+            .position(|r| r.contains(&code_key_b64))
+            .expect("code key was never fetched — it must be fetched in a separate round");
+
+        assert_ne!(
+            instance_round, code_round,
+            "code key must not share a round with the instance key"
+        );
+        assert!(
+            code_round > instance_round,
+            "the code round must come after the instance round"
+        );
+    }
+}

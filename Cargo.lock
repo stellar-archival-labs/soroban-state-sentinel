@@ -1066,8 +1066,10 @@ version = "0.1.0"
 dependencies = [
  "sentinel-rpc-client",
  "sentinel-xdr-builder",
+ "serde_json",
  "stellar-xdr",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
